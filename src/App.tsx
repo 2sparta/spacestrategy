@@ -7,7 +7,7 @@ import {
   irregularity, isIrregular, potatoRadius, POTATO_RADIUS_ICY_KM, POTATO_RADIUS_ROCKY_KM, isIcy,
   type ResKey,
 } from './game';
-import { drawScene, moonRefAU, shipSystemPos, type Camera, type Hit, type Scene } from './render';
+import { drawScene, drawnPosAU, loadSprites, moonRefAU, shipSystemPos, type Camera, type Hit, type Scene } from './render';
 import { KM_PER_AU, SPEEDS, TAG_COLOR, TAG_DESC, auFmt, clamp, fmt, lyFmt, popFmt, starTint } from './style';
 
 const emptyCam = (): Camera => ({ x: 0, y: 0, z: 1, tx: 0, ty: 0, tz: 1, ease: false });
@@ -21,9 +21,10 @@ function galaxyBounds(g: Game) {
 }
 /** Зум «під розмір» для заданого радіуса у а.о. */
 const fitZoom = (W: number, H: number, radiusAU: number) => clamp((Math.min(W, H) * 0.44) / Math.max(1e-7, radiusAU), SYS_ZMIN, SYS_ZMAX);
-/** Межі зуму карти системи: від «уся система разом із поясом Койпера» до окремих супутників.
- *  2×10⁷ пікселів на а.о. — це ~7 км на піксель: видно Фобос поряд із Марсом. */
-const SYS_ZMIN = 0.35, SYS_ZMAX = 2e7;
+/** Межі зуму карти системи: від «уся система разом із поясом Койпера» до поверхні тіл.
+ *  2×10⁹ пікселів на а.о. — це ~75 м на піксель: Фобос і Деймос видно як справжні глиби,
+ *  а планети сягають пів екрана. */
+const SYS_ZMIN = 0.035, SYS_ZMAX = 2e9;
 const GAL_ZMIN = 0.35, GAL_ZMAX = 260;
 /** Зони Сонячної системи для швидкої навігації: [назва, радіус підгонки в а.о.] */
 const ZONES: [string, number][] = [
@@ -85,11 +86,17 @@ export default function App() {
     const img = new Image();
     img.onload = () => { bgRef.current = img; };
     img.src = 'images/nebula.jpg';
+    loadSprites();   // спрайти астероїдів для глибокого зуму
   }, []);
 
   /* ---------- головний цикл ---------- */
   useEffect(() => {
     let last = performance.now(); let raf = 0; let acc = 0;
+    const stepZoom = (cam: Camera) => {
+      if (!cam.ease) return;
+      cam.z *= Math.pow(cam.tz / cam.z, 0.12);
+      if (Math.abs(Math.log(cam.tz / cam.z)) < 0.02) { cam.z = cam.tz; cam.ease = false; }
+    };
     const step = (cam: Camera) => {
       if (!cam.ease) return;
       cam.x += (cam.tx - cam.x) * 0.12;
@@ -110,22 +117,19 @@ export default function App() {
       const f = fadeRef.current;
       fadeRef.current = Math.abs(target - f) < 0.002 ? target : f + (target - f) * Math.min(1, dt * 7);
       if (followRef.current >= 0) {
-        const p = gm.planets[followRef.current];
-        const ang = p.phase + (2 * Math.PI * gm.time) / Math.max(0.01, p.period);
-        const par = p.parent >= 0 ? gm.planets[p.parent] : null;
-        if (par) {
-          const pang = par.phase + (2 * Math.PI * gm.time) / Math.max(0.01, par.period);
-          const ab = par.a * Math.sqrt(Math.max(0, 1 - par.e * par.e));
-          const px = par.a * (Math.cos(pang) - par.e), py = ab * Math.sin(pang);
-          const r = p.a / KM_PER_AU;
-          sysRef.current.x = px + r * Math.cos(ang); sysRef.current.y = py + r * Math.sin(ang);
-        } else {
-          const ab = p.a * Math.sqrt(Math.max(0, 1 - p.e * p.e));
-          sysRef.current.x = p.a * (Math.cos(ang) - p.e); sysRef.current.y = ab * Math.sin(ang);
-        }
-      } else {
-        step(sysRef.current);
+        // берімо ту саму позицію, яку малює рендерер (кеплерова орбіта + зсув
+        // нерозрізненого супутника на обід планети) — інакше на глибокому зумі
+        // камера «відстає» від тіла й воно тікає з кадру
+        const cv0 = canvasRef.current;
+        const W0 = cv0?.parentElement?.clientWidth || 1200, H0 = cv0?.parentElement?.clientHeight || 760;
+        const cam = sysRef.current;
+        const [bx, by] = drawnPosAU(gm, followRef.current, cam.tz, W0, H0, gm.time);
+        cam.x = bx; cam.y = by;
       }
+      // коли камера стежить за тілом, позицію задаємо напряму, але масштаб
+      // усе одно має плавно доїжджати до цільового (інакше 🔍 не наближає)
+      if (followRef.current >= 0) { const fc = sysRef.current; fc.tx = fc.x; fc.ty = fc.y; stepZoom(fc); }
+      else step(sysRef.current);
       step(galRef.current);
       draw();
       acc += dt; if (acc > 0.2) { acc = 0; setTick(t => t + 1); }
@@ -180,6 +184,15 @@ export default function App() {
     const aMax = host.moons.length ? moonRefAU(gm, host) : 0;
     const radius = Math.max(aMax * 1.5, (host.radius / KM_PER_AU) * 60, 2e-6);
     cam.tz = fitZoom(size.w, size.h, radius); cam.ease = true;
+  }
+  /** Наблизити камеру так, щоб тіло займало більшу частину екрана */
+  function inspectBody(id: number) {
+    const p = g.planets[id];
+    if (p.sys !== sysId) openSystem(p.sys);
+    setObjId(id); followRef.current = id;
+    const cam = sysRef.current;
+    cam.tz = fitZoom(size.w, size.h, (p.radius / KM_PER_AU) * 2.4);
+    cam.ease = true;
   }
   function fitZone(radius: number) {
     const cam = sysRef.current;
@@ -336,7 +349,7 @@ export default function App() {
       if (uiRef.current.level === 'galaxy') openSystem(h.id);
       else setSysId(h.id);
     } else {
-      focusPlanet(h.id);
+      inspectBody(h.id);   // подвійний клік — наблизити до самого тіла
     }
   }
 
@@ -345,7 +358,9 @@ export default function App() {
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
       const r = cv.getBoundingClientRect();
-      zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0016));
+      // звичайне колесо — плавне наближення; Shift або Ctrl — швидкий перехід між масштабами
+      const step = e.shiftKey || e.ctrlKey || e.metaKey ? 0.0075 : 0.0022;
+      zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-Math.max(-400, Math.min(400, e.deltaY)) * step));
     };
     cv.addEventListener('wheel', wheel, { passive: false });
     return () => cv.removeEventListener('wheel', wheel);
@@ -380,8 +395,10 @@ export default function App() {
         else if (uiRef.current.level === 'system') backToGalaxy();
         else setObjId(-1);
       }
-      if (k === '+' || k === '=') zoomAt(size.w / 2, size.h / 2, 1.35);
-      if (k === '-') zoomAt(size.w / 2, size.h / 2, 1 / 1.35);
+      if (k === '+' || k === '=') zoomAt(size.w / 2, size.h / 2, 1.6);
+      if (k === '-') zoomAt(size.w / 2, size.h / 2, 1 / 1.6);
+      if (e.key === 'PageUp') zoomAt(size.w / 2, size.h / 2, 12);
+      if (e.key === 'PageDown') zoomAt(size.w / 2, size.h / 2, 1 / 12);
       if (k === 'f') { const c = activeCam(); c.tz = uiRef.current.level === 'system' ? fitZoom(size.w, size.h, 6) : c.tz * 2; c.tx = c.x; c.ty = c.y; c.ease = true; }
     };
     const up = (e: KeyboardEvent) => { keys.delete(e.key.toLowerCase()); if (e.key === 'Shift') keys.delete('shift'); };
@@ -473,8 +490,9 @@ export default function App() {
             {/* керування камерою */}
             <div className="absolute top-2 right-2 flex flex-col gap-1">
               <div className="flex gap-1 bg-black/50 rounded p-1">
-                <button title="Наблизити" onClick={() => zoomAt(size.w / 2, size.h / 2, 1.4)} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700">＋</button>
-                <button title="Віддалити" onClick={() => zoomAt(size.w / 2, size.h / 2, 1 / 1.4)} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700">−</button>
+                <button title="Наблизити (＋ або колесо)" onClick={() => zoomAt(size.w / 2, size.h / 2, 1.6)} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700">＋</button>
+                <button title="Віддалити (− або колесо)" onClick={() => zoomAt(size.w / 2, size.h / 2, 1 / 1.6)} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700">−</button>
+                <button title="Наблизити у 12 разів (Shift+колесо)" onClick={() => zoomAt(size.w / 2, size.h / 2, 12)} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-xs">⇈</button>
                 <button title="Показати всю систему / карту (F)" onClick={() => {
                   if (level === 'system') fitSystem();
                   else { const b = galaxyBounds(g); galRef.current.tz = Math.min(size.w / (b.x1 - b.x0), size.h / (b.y1 - b.y0)) * 0.92; galRef.current.tx = (b.x0 + b.x1) / 2; galRef.current.ty = (b.y0 + b.y1) / 2; galRef.current.ease = true; }
@@ -521,7 +539,8 @@ export default function App() {
                 <p><b className="text-cyan-300">Масштаб:</b> відстані реальні. Сонце → Проксима Центавра — 4.2 св. роки, до Веґи 25, до Регула 79. Стрибок між зорями коштує <b>12 год/св. рік</b> для вантажника (розвідник 6, рудовоз 20). Усередині системи корабель іде 0.3–1.2 а.о. за добу, тому Земля → Юпітер ≈ 7 діб, Земля → Нептун ≈ 50 діб.</p>
                 <p><b className="text-cyan-300">Цикл гри:</b> розвідник досліджує системи → обери планету → «Розвиток» → аванпост → видобуток і виробництво → вантажники торгують → імпорт від тебе створює <b>торгову залежність</b> → тарифи, ембарго, перевороти, анексія.</p>
                 <p><b className="text-cyan-300">Зорі без планет:</b> трапляються часто — там лише пилові пояси. Розвідник може долетіти до самої зорі (клік по зорі на карті системи) і підтвердити, що планет немає.</p>
-                <p><b className="text-cyan-300">Масштаб тіл:</b> планети й супутники на карті мають <b>сталий розмір</b> і не роздуваються від зуму, а орбіти супутників задані у справжніх а.о. — тож наближайте камеру сміливо (до ~10⁷ px/а.о., це кілометри на піксель): система супутників Марса чи Юпітера розкривається перед вами. Подвійний клік на планеті кадрує всю її місячну систему.</p>
+                <p><b className="text-cyan-300">Масштаб тіл:</b> розміри справжні. Поки тіло на екрані менше кількох пікселів, воно малюється читабельною іконкою, але щойно ви наближаєтесь — планета, супутник чи астероїд <b>ростуть до розмірів екрана</b>. Глибина зуму — до <b>~75 метрів на піксель</b> (2×10⁹ px/а.о.): на такому масштабі Фобос і Деймос видно як справжні брили з кратерами. Керування: колесо — плавно, <b>Shift+колесо</b> або <b>PageUp/PageDown</b> — стрибками ×12, кнопка 🔍 «Роздивитися» в панелі тіла або <b>подвійний клік</b> — одразу до тіла, 🛰 «Супутники» — уся система супутників.</p>
+                <p><b className="text-cyan-300">Спрайти тіл:</b> астероїди й дрібні супутники малюються згенерованими спрайтами (5 родин: камʼяні, темні, металеві, крижані, іржаві) — вони обертаються, мають кратери й неправильний силует. Карликові планети, що не досягли гідростатичної рівноваги, малюються витягнутими еліпсоїдами (як Гаумеа). Планети, газові гіганти й великі супутники у наближенні показують процедурну поверхню: континенти й полярні шапки, пояси хмар із Великою Червоною Плямою, кратерні поля.</p>
                 <p><b className="text-cyan-300">Форма тіл:</b> радіус, за якого гравітація перемагає міцність матеріалу («картопляний радіус», potato radius) — близько <b>200 км для крижаних</b> і <b>300 км для камʼяних</b> тіл (Lineweaver &amp; Norman, 2010). Дрібніші тіла лишаються безформними «картоплинами»: Фобос, Деймос, Амальтея, Гіперіон, Пак. На карті вони малюються як неправильні астероїди, і чим менше тіло — тим горбистіше.</p>
                 <p><b className="text-cyan-300">Сонячна система:</b> 8 планет, 9 карликових планет (Церера, Плутон, Гаумеа, Макемаке, Ерида, Гонггонг, Кваоар, Орк, Гігіея), найбільші астероїди (Веста, Паллада, Юнона, Психея, Європа, Інтерамнія), головний пояс астероїдів із люками Кірквуда, троянці Юпітера L4/L5, пояс Койпера та розсіяний диск. Зони: Внутрішня · Пояс астероїдів · Зовнішня · Койпер.</p>
                 <p><b className="text-cyan-300">Перемога:</b> 60% населення галактики під контролем, або {fmt(SINGULARITY)} очок науки (сингулярність), або 70% колоній у власності.</p>
@@ -595,7 +614,7 @@ export default function App() {
             })}
           </div>}
 
-          {level === 'system' && obj && <PlanetPanel g={g} p={obj} explored={explored} tab={tab} setTab={setTab} msg={msg} setObj={id => focusPlanet(id)} />}
+          {level === 'system' && obj && <PlanetPanel g={g} p={obj} explored={explored} tab={tab} setTab={setTab} msg={msg} setObj={id => focusPlanet(id)} inspect={inspectBody} />}
         </div>
       </div>
     </div>
@@ -682,7 +701,7 @@ function Bar({ v, color = '#38d9ff' }: { v: number; color?: string }) {
   return <div className="h-1.5 bg-slate-800 rounded"><div className="h-full rounded" style={{ width: `${Math.max(0, Math.min(100, v))}%`, background: color }} /></div>;
 }
 
-function PlanetPanel({ g, p, explored, tab, setTab, msg, setObj }: { g: Game; p: Planet; explored: boolean; tab: string; setTab: (t: 'info' | 'market' | 'infl' | 'dev') => void; msg: (t: string) => void; setObj: (id: number) => void }) {
+function PlanetPanel({ g, p, explored, tab, setTab, msg, setObj, inspect }: { g: Game; p: Planet; explored: boolean; tab: string; setTab: (t: 'info' | 'market' | 'infl' | 'dev') => void; msg: (t: string) => void; setObj: (id: number) => void; inspect: (id: number) => void }) {
   const me = g.factions[0];
   if (!explored) return <div>
     <div className="text-lg">{p.name}</div>
@@ -718,6 +737,10 @@ function PlanetPanel({ g, p, explored, tab, setTab, msg, setObj }: { g: Game; p:
       </div>}
     </div>
     <div className="flex gap-1">
+      <button className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs" title="Наблизити камеру до самого тіла (видно диск, рельєф, форму)" onClick={() => inspect(p.id)}>🔍 Роздивитися</button>
+      {(p.parent >= 0 ? g.planets[p.parent] : p).moons.length > 0 && <button className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs" title="Показати всю систему супутників" onClick={() => setObj((p.parent >= 0 ? g.planets[p.parent] : p).id)}>🛰 Супутники</button>}
+    </div>
+    <div className="flex gap-1">
       {([['dev', 'Розвиток'], ['market', 'Ринок'], ['infl', 'Вплив'], ['info', 'Фізика']] as const).map(([k, n]) =>
         <button key={k} onClick={() => setTab(k)} className={`flex-1 py-1 rounded ${tab === k ? 'bg-cyan-700' : 'bg-slate-800 hover:bg-slate-700'}`}>{n}</button>)}
     </div>
@@ -737,6 +760,10 @@ function PlanetPanel({ g, p, explored, tab, setTab, msg, setObj }: { g: Game; p:
           const irr = irregularity(p);
           const lim = potatoRadius(p);
           const material = isIcy(p) ? `крижане (межа ~${POTATO_RADIUS_ICY_KM} км)` : `камʼяне (межа ~${POTATO_RADIUS_ROCKY_KM} км)`;
+          if (p.triax) return <span className="text-cyan-300">
+            Витягнутий еліпсоїд (тривісність ~{(p.triax * 100).toFixed(0)}%) — R = {fmt(p.radius)} км, доба {p.rot.toFixed(1)} год.
+            Швидке обертання розтягує тіло: Гаумеа має осі 1050 × 840 × 537 км, тож попри розмір воно не стає кулею.
+          </span>;
           return irr <= 0.02
             ? <span className="text-emerald-300">Куляста: R = {fmt(p.radius)} км перевищує «картопляний радіус» — гравітація перемагає міцність матеріалу. Тіло {material}.</span>
             : <span className={irr > 0.15 ? 'text-amber-300' : 'text-slate-300'}>

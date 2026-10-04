@@ -3,6 +3,40 @@ import { irregularity, orbitPosAU, placeAU, potatoRadius, shipPlace, shipProgres
 import { TAG_COLOR, auFmt, clamp, lyFmt, starTint } from './style';
 
 const AU_KM = 149597870.7;
+let TIME = 0; // ігровий час кадру (для обертання спрайтів)
+
+/* ---------- спрайти дрібних тіл (згенеровані tools/gen-sprites.mjs) ---------- */
+const SPRITE_FAMS = ['rock', 'dark', 'metal', 'ice', 'rusty'] as const;
+type SpriteFam = typeof SPRITE_FAMS[number];
+const SPRITES: Record<string, HTMLImageElement[]> = {};
+let spritesRequested = false;
+/** Почати завантаження спрайтів астероїдів (викликається один раз при старті). */
+export function loadSprites() {
+  if (spritesRequested || typeof Image === 'undefined') return;
+  spritesRequested = true;
+  for (const fam of SPRITE_FAMS) {
+    SPRITES[fam] = [];
+    for (let i = 1; i <= 5; i++) {
+      const img = new Image();
+      img.src = `images/bodies/${fam}-${String(i).padStart(2, '0')}.png`;
+      SPRITES[fam].push(img);
+    }
+  }
+}
+/** Родина спрайта за складом тіла: крижані, металеві, іржаві, темні, камʼяні */
+function spriteFamily(p: Planet): SpriteFam {
+  if (p.res.vol >= 0.5 || p.tags.includes('C') || p.tags.includes('I') || p.tags.includes('S-C')) return 'ice';
+  if (p.res.metal >= 0.75 && p.res.rare >= 0.35) return 'metal';
+  if (p.tags.includes('F') || p.tags.includes('AB') || p.tags.includes('S-F')) return 'rusty';
+  if (p.tags === 'G' || p.tags === 'S-G' || p.radius < 60) return 'dark';
+  return 'rock';
+}
+function spriteFor(p: Planet): HTMLImageElement | null {
+  const list = SPRITES[spriteFamily(p)];
+  if (!list) return null;
+  const img = list[(p.id * 2654435761 >>> 0) % list.length];
+  return img && img.complete && img.naturalWidth > 0 ? img : null;
+}
 
 export interface Camera { x: number; y: number; z: number; tx: number; ty: number; tz: number; ease: boolean }
 export interface Hit { x: number; y: number; r: number; kind: 'star' | 'planet' | 'moon'; id: number; sys: number }
@@ -38,12 +72,18 @@ function drawDust(c: CanvasRenderingContext2D, ox: number, oy: number, W: number
 }
 
 /* ---------- геометрія тіл ---------- */
-/** Видимий радіус тіла у пікселях — СТАЛИЙ, не залежить від зуму.
- *  Залежить лише від фізичного радіуса, тож планета чи супутник не «роздуваються».
- *  Щоб роздивитися місячну систему, наближайте камеру — орбіти супутників
- *  задані у справжніх астрономічних одиницях і розходяться на екрані самі. */
-export function bodyRpx(p: Planet) {
-  return clamp(3 + 4.5 * Math.log10(1 + p.radius / 300), 2.6, 34);
+/** Найменший «читабельний» радіус тіла — поки справжній розмір менший,
+ *  тіло малюється іконкою. Логарифмічний, щоб зберігався порядок величин. */
+function minRpx(p: Planet) {
+  return 3 + 5 * Math.log10(1 + p.radius / 120);
+}
+/** СТАЛИЙ читабельний радіус (іконка) — для проміжків між супутниками */
+export function bodyIconRpx(p: Planet) { return minRpx(p); }
+/** Видимий радіус тіла: справжній кутовий розмір (радіус / а.о. × масштаб),
+ *  але не менший за іконку й не більший за пів екрана. Саме тому наближення
+ *  камери справді збільшує планету — від іконки до розмірів екрана. */
+export function bodyRpx(p: Planet, S: number, W: number, H: number) {
+  return clamp((p.radius / AU_KM) * S, minRpx(p), 0.42 * Math.min(W, H));
 }
 /** Справжній (лінійний) радіус орбіти супутника у пікселях */
 export const moonOrbitAU = (m: Planet) => m.a / AU_KM;
@@ -53,6 +93,18 @@ function moonDisplay(m: Planet, prPx: number, S: number) {
   const lin = moonOrbitAU(m) * S;
   const rim = prPx + 2.5;
   return { r: Math.max(lin, rim), stacked: lin < rim, lin };
+}
+/** Абсолютна позиція тіла у а.о. ТАКА САМА, як його малює drawScene (з урахуванням
+ *  «на обіді планети», коли справжня орбіта супутника ще нерозрізненна) — щоб
+ *  камера стеження тримала тіло точно в центрі кадру аж до глибокого зуму. */
+export function drawnPosAU(g: Game, id: number, S: number, W: number, H: number, time: number): [number, number] {
+  const p = g.planets[id];
+  const par = p.parent >= 0 ? g.planets[p.parent] : null;
+  if (!par) return orbitPosAU(p, time);
+  const [px, py] = orbitPosAU(par, time);
+  const ang = p.phase + (2 * Math.PI * time) / Math.max(0.01, p.period);
+  const rr = moonDisplay(p, bodyRpx(par, S, W, H), S).r / Math.max(1e-12, S);
+  return [px + rr * Math.cos(ang), py + rr * Math.sin(ang)];
 }
 /** Еталонний радіус системи супутників для кадрування: найзовніший із «регулярних»
  *  супутників (а ≤ 30·aMin); далека хмара дрібних астероїдних не враховується. */
@@ -64,16 +116,17 @@ export function moonRefAU(g: Game, p: Planet) {
   return outer / AU_KM;
 }
 /** Видимий радіус зорі у пікселях системи */
-function starPx(g: Game, sysId: number, S: number) {
+function starPx(g: Game, sysId: number, S: number, W: number, H: number) {
   const s = g.systems[sysId];
-  const base = (2.6 + 3.2 * Math.log10(1 + s.starMass * 2.5)) * (s.giant ? 2.1 : 1);
-  const zf = clamp(Math.pow(S / 12, 0.3), 0.8, 3.6);
-  return clamp(base * zf, 2.5, 60);
+  const km = 696000 * Math.pow(s.starMass, 0.8) * (s.giant ? 10 : 1);   // R☉ = 696 000 км
+  const icon = (9 + 11 * Math.log10(1 + s.starMass * 3)) * (s.giant ? 1.9 : 1);
+  return clamp((km / AU_KM) * S, icon, 0.45 * Math.min(W, H));
 }
 
 export function drawScene(c: CanvasRenderingContext2D, st: Scene): Hit[] {
   const hits: Hit[] = [];
   const { W, H } = st;
+  TIME = st.time;
   c.clearRect(0, 0, W, H);
   c.fillStyle = '#05070d'; c.fillRect(0, 0, W, H);
 
@@ -264,7 +317,7 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
 
   // --- придатна зона та снігова лінія ---
   const hzIn = 0.95 * Math.sqrt(s.lum), hzOut = 1.37 * Math.sqrt(s.lum), snow = 2.7 * Math.sqrt(s.lum);
-  if (hzOut * S > 8) {
+  if (hzOut * S > 8 && hzOut * S < 3e5) {
     c.fillStyle = 'rgba(90,220,140,0.055)';
     c.beginPath(); c.arc(X(0), Y(0), hzOut * S, 0, 7); c.arc(X(0), Y(0), hzIn * S, 0, 7, true); c.fill();
     c.strokeStyle = 'rgba(110,230,160,0.28)'; c.setLineDash([4, 6]);
@@ -273,7 +326,7 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
     c.setLineDash([]);
     if (hzIn * S > 40) { c.fillStyle = 'rgba(120,230,170,0.5)'; c.font = '9px sans-serif'; c.textAlign = 'left'; c.fillText('придатна зона', X(0) + hzIn * S * 0.72, Y(0) - hzIn * S * 0.72); }
   }
-  if (snow * S > 40) {
+  if (snow * S > 40 && snow * S < 3e5) {
     c.strokeStyle = 'rgba(150,210,255,0.25)'; c.setLineDash([2, 8]);
     c.beginPath(); c.arc(X(0), Y(0), snow * S, 0, 7); c.stroke(); c.setLineDash([]);
     c.fillStyle = 'rgba(160,215,255,0.5)'; c.font = '9px sans-serif'; c.textAlign = 'left';
@@ -332,7 +385,8 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
   for (const pid of s.planets) {
     const p = g.planets[pid];
     const b = p.a * Math.sqrt(Math.max(0, 1 - p.e * p.e));
-    if (p.a * S < 4) continue;
+    if (p.a * S < 4) continue;      // затісні орбіти зливаються з диском зорі
+    if (p.a * S > 3e5) continue;    // камера глибоко всередині орбіти — дуга вже не влазить
     c.strokeStyle = p.id === st.objId ? 'rgba(180,220,255,0.5)' : 'rgba(120,160,220,0.15)';
     c.beginPath();
     c.ellipse(X(-p.a * p.e), Y(0), Math.max(0.5, p.a * S), Math.max(0.5, b * S), 0, 0, 7);
@@ -340,7 +394,7 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
   }
 
   // --- зоря ---
-  const sr = starPx(g, st.sysId, S);
+  const sr = starPx(g, st.sysId, S, W, H);
   const col = starTint(s.starClass, s.giant);
   const cx = X(0), cy = Y(0);
   const g1 = c.createRadialGradient(cx, cy, 0, cx, cy, sr * 9);
@@ -361,7 +415,7 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
     const p = g.planets[pid];
     const [ax, ay] = orbitPosAU(p, time);
     const x = X(ax), y = Y(ay);
-    const rad = bodyRpx(p);
+    const rad = bodyRpx(p, S, W, H);
     // найбільший радіус, який може займати система супутників цієї планети
     const far = p.moons.length ? Math.max(...p.moons.map(id => moonOrbitAU(g.planets[id]))) * S : 0;
     if (x < -80 - far || y < -80 - far || x > W + 80 + far || y > H + 80 + far) continue;
@@ -384,7 +438,7 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
         }
         c.strokeStyle = m.id === st.objId ? 'rgba(190,225,255,0.45)' : 'rgba(140,175,215,0.13)';
         c.beginPath(); c.arc(x, y, disp.r, 0, 7); c.stroke();
-        const mrad = bodyRpx(m);
+        const mrad = bodyRpx(m, S, W, H);
         drawBody(c, mx, my, mrad, m);
         if (m.colony) { c.strokeStyle = m.owner >= 0 ? g.factions[m.owner].color : '#e8f4ff'; c.lineWidth = 1.4; c.beginPath(); c.arc(mx, my, mrad + 2.5, 0, 7); c.stroke(); c.lineWidth = 1; }
         if (m.id === st.objId || st.hoverId === m.id) {
@@ -395,7 +449,7 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
         if (disp.r > 26 || m.id === st.objId || st.hoverId === m.id) {
           c.fillStyle = m.id === st.objId ? '#ffffff' : '#9fb3c8'; c.font = '9px sans-serif'; c.textAlign = 'center';
           c.fillText(m.name, mx, my - mrad - 4);
-          if ((m.id === st.objId || st.hoverId === m.id) && S > 3000) {
+          if ((m.id === st.objId || st.hoverId === m.id) && mrad > 40) {
             c.fillStyle = irregularity(m) > 0.15 ? '#ffc46b' : '#9fd8a0'; c.font = '9px sans-serif';
             c.fillText(`R ${fmtKm(m.radius)} км · ${irregularity(m) > 0.15 ? 'неправильна форма' : 'куляста'} · період ${m.period < 1 ? (m.period * 24).toFixed(1) + ' год' : m.period.toFixed(1) + ' діб'}`, mx, my + mrad + 10);
           }
@@ -419,7 +473,7 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
     hits.push({ x, y, r: Math.max(rad + 4, 10), kind: 'planet', id: p.id, sys: p.sys });
 
     // виноска «розгляду» — коли камера наближена до обраного тіла
-    if ((p.id === st.objId || st.hoverId === p.id) && S > 3000 && rad > 3) {
+    if ((p.id === st.objId || st.hoverId === p.id) && rad > 40) {
       const lines = [
         `${p.name} · R ${fmtKm(p.radius)}`,
         `${isIrrLabel(p)}`,
@@ -480,6 +534,7 @@ function drawSystem(c: CanvasRenderingContext2D, st: Scene, hits: Hit[]) {
 
 const fmtKm = (km: number) => (km < 10 ? km.toFixed(1) : km < 1000 ? km.toFixed(0) : Math.round(km).toLocaleString('uk-UA'));
 const isIrrLabel = (p: Planet) => {
+  if (p.triax) return `витягнутий еліпсоїд — швидке обертання (доба ${p.rot.toFixed(1)} год)`;
   const irr = irregularity(p);
   if (irr <= 0.02) return 'куляста форма (гідростатична рівновага)';
   if (irr <= 0.15) return `проміжна форма (R ${fmtKm(p.radius)} км, межа ${potatoRadius(p)} км)`;
@@ -513,20 +568,36 @@ export function shipSystemPos(g: Game, sh: Ship, time: number, sysId: number): [
 }
 
 /* ---------- допоміжне ---------- */
-/** Тіла менші за «картопляний радіус» (≈200 км крижані, ≈300 км камʼяні)
- *  не тримають кулястої форми — малюємо їх як неправильні астероїди. */
+/** Малює тіло. Три режими:
+ *   • спрайт — дрібні тіла (менші за «картопляний радіус»), коли вони вже досить великі
+ *     на екрані: астероїд/«картоплина» з кратерами, обертається;
+ *   • процедурна «картоплина» — ті самі тіла, поки вони менші за ~8 px (спрайт не потрібен);
+ *   • сфера — планети, великі супутники, газові гіганти (з еліпсоїдом для карликів,
+ *     які не досягли гідростатичної рівноваги). */
 function drawBody(c: CanvasRenderingContext2D, x: number, y: number, r: number, p: Planet) {
   const col = TAG_COLOR[p.tags] || '#8aa2b8';
   const gas = p.tags.includes('D');
   const irr = irregularity(p);
-  if (irr > 0.02 && !gas) {
-    const n = 10;
+
+  // --- дрібні тіла: спрайт або процедурна картоплина ---
+  if (irr > 0.02 && !gas && !p.triax) {
+    const img = r >= 8 ? spriteFor(p) : null;
+    if (img) {
+      const ang = ((p.id * 0.7) % 1 + 1) * 0.6 * Math.PI + (TIME / Math.max(0.05, p.rot / 24)) * 0.06;
+      c.save();
+      c.translate(x, y); c.rotate(ang);
+      c.drawImage(img, -r, -r, r * 2, r * 2);
+      c.restore();
+      // легкий контур, щоб тіло читалося на темному тлі
+      if (r > 10) { c.strokeStyle = 'rgba(255,255,255,0.07)'; c.lineWidth = 1; c.beginPath(); c.arc(x, y, r * 0.96, 0, 7); c.stroke(); }
+      return;
+    }
+    const n = 12;
     const seed = (p.id * 2654435761) % 100000;
     c.save(); c.translate(x, y);
     c.beginPath();
     for (let i = 0; i < n; i++) {
       const a2 = (i / n) * Math.PI * 2;
-      // детермінований «шум рельєфу»: амплітуда тим більша, чим менше тіло за межу рівноваги
       const h = ((seed * (i + 7) * 9301 + 49297) % 233280) / 233280;
       const rr = r * (1 - irr * 0.42 + irr * 0.84 * h);
       const px2 = Math.cos(a2) * rr, py2 = Math.sin(a2) * rr * 0.94;
@@ -540,32 +611,120 @@ function drawBody(c: CanvasRenderingContext2D, x: number, y: number, r: number, 
     c.restore();
     return;
   }
-  const grad = c.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
+
+  // --- кулясті тіла: справжня куля; «проміжні» карлики — еліпсоїд ---
+  // p.triax — виміряна тривісність (напр., Гаумеа: 1050×840×537 км), інакше
+  // невеликий ступінь витягнутості для тіл поблизу «картопляного радіуса»
+  const triax = clamp(p.triax ?? irr, 0, 0.28); // 0 — куля, більше — витягнутий еліпсоїд
+  const ax = r * (1 + triax * 1.6), by = r * (1 - triax * 0.6);
+  const tilt = ((p.id * 0.37) % 1 - 0.5) * 1.1 + (p.tilt * Math.PI) / 180 * 0.15;
+  c.save();
+  c.translate(x, y); c.rotate(tilt);
+  const grad = c.createRadialGradient(-ax * 0.32, -by * 0.4, r * 0.08, 0, 0, Math.max(ax, by));
   grad.addColorStop(0, lighten(col, 0.45));
   grad.addColorStop(0.65, col);
   grad.addColorStop(1, '#070b14');
   c.fillStyle = grad;
-  c.beginPath(); c.arc(x, y, r, 0, 7); c.fill();
+  c.beginPath(); c.ellipse(0, 0, ax, by, 0, 0, 7); c.fill();
   if (gas && r > 9) {
-    c.save(); c.beginPath(); c.arc(x, y, r, 0, 7); c.clip();
+    c.save(); c.beginPath(); c.ellipse(0, 0, ax, by, 0, 0, 7); c.clip();
     for (let i = -3; i <= 3; i++) {
       c.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.16)';
-      c.fillRect(x - r, y + i * r * 0.28 - r * 0.1, r * 2, r * 0.16);
+      c.fillRect(-ax, i * by * 0.28 - by * 0.1, ax * 2, by * 0.16);
     }
     c.restore();
   }
-  if (r > 6) { c.strokeStyle = 'rgba(255,255,255,0.12)'; c.beginPath(); c.arc(x, y, r, 0, 7); c.stroke(); }
+  // --- поверхня: деталі з'являються лише коли тіло вже велике на екрані ---
+  if (r > 34) drawSurface(c, ax, by, r, p);
+  if (r > 6) { c.strokeStyle = 'rgba(255,255,255,0.12)'; c.beginPath(); c.ellipse(0, 0, ax, by, 0, 0, 7); c.stroke(); }
   if (p.pressure > 0.5 && p.tags.includes('A') && r > 6) {
-    c.fillStyle = 'rgba(120,190,255,0.14)'; c.beginPath(); c.arc(x, y, r * 1.12, 0, 7); c.fill();
+    c.fillStyle = 'rgba(120,190,255,0.14)'; c.beginPath(); c.ellipse(0, 0, ax * 1.12, by * 1.12, 0, 0, 7); c.fill();
   }
-  // кільця — якщо є супутник на межі Роша або планета-гігант
   if (gas && r > 12) {
     c.strokeStyle = 'rgba(226,203,168,0.35)'; c.lineWidth = 2;
-    c.beginPath(); c.ellipse(x, y, r * 1.8, r * 0.55, -0.3, 0, 7); c.stroke();
+    c.beginPath(); c.ellipse(0, 0, ax * 1.8, by * 0.55, -0.3, 0, 7); c.stroke();
     c.strokeStyle = 'rgba(226,203,168,0.22)';
-    c.beginPath(); c.ellipse(x, y, r * 2.1, r * 0.65, -0.3, 0, 7); c.stroke();
+    c.beginPath(); c.ellipse(0, 0, ax * 2.1, by * 0.65, -0.3, 0, 7); c.stroke();
     c.lineWidth = 1;
   }
+  c.restore();
+}
+
+function hashRnd(seed: number) {
+  let s = (seed >>> 0) || 1;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Процедурна поверхня для великих тіл: континенти/океани, пояси газових гігантів,
+ *  кратери й полярні шапки. Детерміновано від id тіла, тож не «мерехтить». */
+function drawSurface(c: CanvasRenderingContext2D, ax: number, by: number, r: number, p: Planet) {
+  const gas = p.tags.includes('D');
+  const rnd = hashRnd(p.id * 7919 + 13);
+  c.save();
+  c.beginPath(); c.ellipse(0, 0, ax, by, 0, 0, 7); c.clip();
+  const S = Math.max(ax, by);
+  if (gas) {
+    // пояси хмар + велика пляма
+    for (let i = 0; i < 14; i++) {
+      const yy = -by + (i / 13) * by * 2;
+      const h = (by * 2) / 13 * (0.5 + rnd() * 0.9);
+      const light = rnd();
+      c.fillStyle = light > 0.5 ? `rgba(255,255,255,${0.05 + rnd() * 0.09})` : `rgba(0,0,0,${0.05 + rnd() * 0.1})`;
+      c.beginPath();
+      c.ellipse((rnd() - 0.5) * ax * 0.3, yy, ax * (0.85 + rnd() * 0.2), h / 2, (rnd() - 0.5) * 0.06, 0, 7);
+      c.fill();
+    }
+    if (p.name === 'Юпітер' || rnd() < 0.5) {
+      c.fillStyle = 'rgba(200,110,80,0.65)';
+      c.beginPath(); c.ellipse(ax * 0.25, by * 0.28, ax * 0.2, by * 0.11, 0.2, 0, 7); c.fill();
+      c.strokeStyle = 'rgba(255,220,200,0.25)'; c.lineWidth = Math.max(1, r * 0.01); c.stroke();
+    }
+  } else if (p.tags.includes('A')) {
+    // океан + континенти + полярні шапки
+    const sea = p.hydroCov > 0.05 ? Math.min(0.92, Math.max(0.3, p.hydroCov)) : 0.75;
+    c.fillStyle = `rgba(28,74,132,${0.55 + sea * 0.3})`;
+    c.fillRect(-ax, -by, ax * 2, by * 2);
+    const land = p.habit > 0.55 ? [58, 108, 62] : p.habit > 0.25 ? [124, 112, 74] : [150, 120, 96];
+    for (let i = 0; i < 12; i++) {
+      const cx2 = (rnd() - 0.5) * ax * 1.5, cy2 = (rnd() - 0.5) * by * 1.5;
+      const rr = S * (0.06 + rnd() * 0.22);
+      c.fillStyle = `rgba(${land[0]},${land[1]},${land[2]},${0.75 + rnd() * 0.25})`;
+      c.beginPath();
+      c.moveTo(cx2, cy2);
+      const pts = 7;
+      for (let k = 1; k <= pts; k++) {
+        const a2 = (k / pts) * Math.PI * 2;
+        const rad2 = rr * (0.55 + rnd() * 0.8);
+        c.lineTo(cx2 + Math.cos(a2) * rad2, cy2 + Math.sin(a2) * rad2 * 0.75);
+      }
+      c.closePath(); c.fill();
+    }
+    if (p.temp < 300) {
+      c.fillStyle = 'rgba(240,248,255,0.85)';
+      c.beginPath(); c.ellipse(0, -by * 1.02, ax * 0.75, by * 0.16, 0, 0, 7); c.fill();
+      c.beginPath(); c.ellipse(0, by * 1.02, ax * 0.8, by * 0.18, 0, 0, 7); c.fill();
+    }
+  } else {
+    // кратерний рельєф для пустельних, крижаних і камʼяних тіл
+    for (let i = 0; i < 26; i++) {
+      const cx2 = (rnd() - 0.5) * ax * 1.8, cy2 = (rnd() - 0.5) * by * 1.8;
+      const rr = S * (0.03 + Math.pow(rnd(), 2) * 0.16);
+      c.fillStyle = `rgba(0,0,0,${0.06 + rnd() * 0.12})`;
+      c.beginPath(); c.ellipse(cx2, cy2, rr, rr * (0.7 + rnd() * 0.5), 0, 0, 7); c.fill();
+      c.strokeStyle = `rgba(255,255,255,${0.05 + rnd() * 0.08})`; c.lineWidth = Math.max(0.6, rr * 0.14);
+      c.beginPath(); c.ellipse(cx2 - rr * 0.1, cy2 - rr * 0.15, rr * 1.05, rr * 0.75, 0, 0, 7); c.stroke();
+    }
+    if (p.res.vol > 0.6) {
+      c.fillStyle = 'rgba(235,246,255,0.25)';
+      c.beginPath(); c.ellipse(0, -by * 0.98, ax * 0.85, by * 0.2, 0, 0, 7); c.fill();
+    }
+  }
+  c.restore();
 }
 
 function lighten(hex: string, f: number) {
@@ -577,12 +736,16 @@ function lighten(hex: string, f: number) {
 
 /** Лінійка масштабу внизу праворуч: 'ly' — світлові роки, 'au' — астрономічні одиниці */
 function drawScaleBar(c: CanvasRenderingContext2D, W: number, H: number, S: number, unit: 'ly' | 'au', alpha: number) {
-  const steps = unit === 'ly'
-    ? [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-    : [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000];
-  let pick = steps[0];
-  for (const s of steps) if (s * S <= W * 0.22) pick = s;
-  const px = pick * S;
+  // сходинки довжин: світлові роки — для галактики, а.о. й кілометри — для системи
+  const ladder: [number, string][] = unit === 'ly'
+    ? [[0.1, 'св. р.'], [0.2, 'св. р.'], [0.5, 'св. р.'], [1, 'св. р.'], [2, 'св. р.'], [5, 'св. р.'], [10, 'св. р.'], [20, 'св. р.'], [50, 'св. р.'], [100, 'св. р.'], [200, 'св. р.'], [500, 'св. р.']]
+    : [[1000, 'км'], [2000, 'км'], [5000, 'км'], [10000, 'км'], [20000, 'км'], [50000, 'км'], [100000, 'км'], [200000, 'км'], [500000, 'км'],
+       [1e6, 'км'], [2e6, 'км'], [5e6, 'км'], [0.05, 'а.о.'], [0.1, 'а.о.'], [0.2, 'а.о.'], [0.5, 'а.о.'], [1, 'а.о.'], [2, 'а.о.'], [5, 'а.о.'],
+       [10, 'а.о.'], [20, 'а.о.'], [50, 'а.о.'], [100, 'а.о.'], [200, 'а.о.'], [500, 'а.о.'], [1000, 'а.о.'], [2000, 'а.о.']];
+  const pxOf = (v: number, u: string) => (u === 'км' ? (v / AU_KM) * S : v * S);
+  let pick: number = ladder[0][0], label: string = ladder[0][1];
+  for (const [v, u] of ladder) { if (pxOf(v, u) <= W * 0.22) { pick = v; label = u; } }
+  const px = pxOf(pick, label);
   const x1 = W - 22 - px, y1 = H - 26;
   c.globalAlpha = alpha * 0.75;
   c.strokeStyle = '#8fb0d0'; c.lineWidth = 1.5;
@@ -590,6 +753,16 @@ function drawScaleBar(c: CanvasRenderingContext2D, W: number, H: number, S: numb
   c.moveTo(x1, y1 - 4); c.lineTo(x1, y1); c.lineTo(x1 + px, y1); c.lineTo(x1 + px, y1 - 4);
   c.stroke();
   c.fillStyle = '#9fb3c8'; c.font = '10px sans-serif'; c.textAlign = 'center';
-  c.fillText(unit === 'ly' ? `${pick} св. р.` : `${pick} а.о.`, x1 + px / 2, y1 - 7);
+  const txt = label === 'км' ? `${pick >= 1000 ? (pick / 1000) + ' тис.' : pick} км` : `${pick} ${label}`;
+  c.fillText(txt, x1 + px / 2, y1 - 7);
+  // ще й «метри на піксель» — орієнтир для глибокого зуму
+  if (label === 'км' && px > 0) {
+    const mpp = AU_KM * 1000 / S;
+    if (mpp < 1e5) {
+      c.fillStyle = '#7f93a8'; c.font = '9px sans-serif';
+      c.fillText(mpp >= 1000 ? `${(mpp / 1000).toFixed(1)} км/px` : `${mpp.toFixed(0)} м/px`, x1 + px / 2, y1 + 11);
+    }
+  }
   c.globalAlpha = alpha;
 }
+

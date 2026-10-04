@@ -50,6 +50,8 @@ export interface Planet {
   id: number; name: string; sys: number; parent: number; moons: number[]; tags: string;
   mass: number; radius: number; g: number; density: number; a: number; e: number; inc: number; period: number; phase: number;
   rot: number; tilt: number; teq: number; temp: number; pressure: number; atmo: string; toxic: boolean; weather: string;
+  /** виміряна тривісність (0 = куля, 0.28 = сильно витягнутий еліпсоїд) */
+  triax?: number;
   hydro: string; hydroCov: number; crust: string; magnet: number; radiation: number; tectonics: string; tidal: number; locked: boolean;
   resonance: string; roche: boolean; res: Res; bio: string; features: string[]; habit: number;
   kind?: 'planet' | 'dwarf' | 'asteroid';   // клас тіла (для Сонячної системи — точний)
@@ -219,6 +221,15 @@ function addPlanet(g: Game, s: StarSystem, a: number, e: number, mass: number, n
   p.res = resFor(p.tags);
   // супутники: газові гіганти мають великі регулярні + хмару дрібних астероїдних
   const nm = gas ? (rnd() < 0.07 ? 0 : Math.floor(2 + Math.pow(rnd(), 2.2) * 34)) : (p.mass > 0.3 && rnd() < 0.4 ? 1 : 0);
+  // дрібні захоплені супутники (як Фобос і Деймос у Марса або Дактиль в Іди):
+  // кількакілометрові «картоплини» на випадкових орбітах
+  if (!gas && p.mass > 0.02 && p.a > 0.2 && rnd() < 0.42) {
+    const cnt = rnd() < 0.3 ? 2 : 1;
+    for (let j = 0; j < cnt; j++) {
+      makeMoon(g, p, p.radius * R(3.2, 14), Math.pow(10, R(-11, -8)), 0,
+        `${p.name}${'abcdefgh'[j]}`, R(0.001, 0.08), R(0, 45));
+    }
+  }
   if (nm > 0) {
     const regular = Math.min(nm, gas ? 2 + Math.floor(rnd() * 4) : 1);
     let ma = gas ? R(180000, 420000) : R(150000, 380000);
@@ -260,13 +271,53 @@ function genSystem(g: Game, id: number, seed: StarSeed): StarSystem {
   if (seed.planets) {
     for (const kp of seed.planets) addPlanet(g, s, kp.a, kp.e, kp.mass, kp.n, kp.tags);
   } else if (!seed.barren) {
-    const n = Math.max(0, Math.round(R(1, 6.4) - (s.giant ? 1.5 : 0)));
+    const n = Math.max(0, Math.round(R(1, 8) - (s.giant ? 2 : 0)));
     let a = snow * R(0.12, 0.34);
     for (let i = 0; i < n; i++) {
       if (i > 0) a *= R(1.4, 1.9);
       const teq = Math.round((278 * Math.pow(s.lum, 0.25)) / Math.sqrt(a));
       const mass = a > snow ? (rnd() < 0.55 ? R(10, 320) : R(0.05, 2.5)) : (rnd() < 0.12 ? R(0.01, 0.08) : R(0.1, 4.5));
       addPlanet(g, s, a, R(0, 0.12), mass, `${s.name} ${ROMAN[i]}`, undefined, teq);
+    }
+  }
+  // --- пояси дрібних тіл: аналоги головного поясу астероїдів і поясу Койпера ---
+  if (!seed.belts) {
+    const as = s.planets.map(id => g.planets[id].a);
+    // пояс у проміжку між двома планетами, якщо він досить широкий
+    for (let i = 0; i + 1 < as.length; i++) {
+      if (as[i + 1] / as[i] > 1.85 && rnd() < 0.45) {
+        s.belts.push({ a: [as[i] * 1.3, as[i + 1] * 0.78], kind: 'main', n: 200, label: 'пояс астероїдів' });
+      }
+    }
+    // далекий крижаний пояс за найзовнішою планетою
+    const last = as.length ? Math.max(...as) : 0.4;
+    if (last > 0.12 && rnd() < 0.7) {
+      s.belts.push({ a: [last * 1.7, last * 3.4], kind: 'kuiper', n: 240, label: 'пояс Койпера' });
+    }
+  } else if (s.planets.length && rnd() < 0.4) {
+    // у реальних систем із каталогу іноді додаємо далекий пояс
+    const last = Math.max(...s.planets.map(id => g.planets[id].a));
+    if (last > 0.3) s.belts.push({ a: [last * 1.8, last * 3.6], kind: 'kuiper', n: 180, label: 'далекий пояс' });
+  }
+  // --- карликові планети в поясах (як Церера й Плутон) ---
+  for (const belt of s.belts) {
+    if (rnd() > 0.5) continue;
+    const cnt = 1 + (rnd() < 0.4 ? 1 : 0);
+    for (let k = 0; k < cnt; k++) {
+      const a = belt.a[0] + (belt.a[1] - belt.a[0]) * R(0.2, 0.8);
+      const p = mkPlanet(g.planets.length, s.id, -1); g.planets.push(p); s.planets.push(p.id);
+      p.name = `${s.name} ${ROMAN[s.planets.length - 1]}`;
+      p.a = a; p.e = R(0.02, 0.22); p.inc = R(0, 25);
+      p.mass = R(1e-4, 4e-3);
+      p.period = 365.25 * Math.sqrt((a * a * a) / s.starMass);
+      p.teq = Math.round(278 * Math.pow(s.lum, 0.25) / Math.sqrt(a));
+      p.tags = autoTags(p.mass, p.teq);
+      p.radius = 6371 * Math.pow(p.mass, 0.27);
+      p.kind = p.radius < 2400 ? 'dwarf' : 'planet';   // маленькі — карликові
+      p.rot = R(6, 40); p.tilt = R(0, 30);
+      p.res = resFor(p.tags);
+      describe(p);
+      p.g = p.mass / (p.radius / 6371) ** 2; p.density = 5.51 * p.mass / (p.radius / 6371) ** 3;
     }
   }
   if (!s.planets.length && !s.belts.length) beltOnly(s);
@@ -862,6 +913,7 @@ interface SmallRow {
   name: string; a: number; e: number; inc: number; radius: number; mass: number;
   tags: 'G' | 'P'; note: string; res?: Partial<Res>; dens?: number; moons?: MoonRow[]; color?: string;
   m0?: number;   // середня аномалія на епоху J2000, рад (для найвідоміших тіл)
+  triax?: number; rot?: number;   // виміряна тривісність і доба обертання (год)
 }
 const SOLAR_SMALL: SmallRow[] = [
   // --- Головний пояс астероїдів (2.06–3.27 а.о., між Марсом і Юпітером) ---
@@ -894,6 +946,7 @@ const SOLAR_SMALL: SmallRow[] = [
     moons: [['Дисномія', 37273, 0.0062, mr(175, 1.2), 175, 'S-C']] },
   { name: 'Гаумеа', a: 43.22, e: 0.191, inc: 28.19, radius: 780, mass: 6.7e-4, tags: 'G', dens: 2.0, color: '#e6e9ee',
     note: 'обертається за 3.9 год — витягнута, як мʼяч; має кільце й два супутники',
+    triax: 0.16, rot: 3.9,   // осі 1050×840×537 км: швидке обертання не дає стати кулею
     res: { metal: 0.15, vol: 0.9, rare: 0.2 },
     moons: [['Гіʼяка', 49880, 0.05, mr(160, 1.0), 160, 'S-C'], ['Намака', 25657, 0.25, mr(85, 1.0), 85, 'S-C']] },
   { name: 'Макемаке', a: 45.56, e: 0.158, inc: 28.98, radius: 715, mass: 5.2e-4, tags: 'G', dens: 2.1, color: '#d9a98f',
@@ -1049,7 +1102,8 @@ function genSolar(g: Game, id: number, x: number, y: number) {
     p.bio = 'Немає';
     p.habit = clamp(0.02 + p.res.org * 0.1 + p.res.vol * 0.06, 0.02, 0.15);
     p.g = p.mass / (p.radius / 6371) ** 2; p.density = 5.51 * p.mass / (p.radius / 6371) ** 3;
-    p.rot = p.radius > 600 ? R(6, 30) : R(6, 40); p.tilt = R(0, 30);
+    p.rot = row.rot ?? (p.radius > 600 ? R(6, 30) : R(6, 40)); p.tilt = R(0, 30);
+    if (row.triax) p.triax = row.triax;
     p.features.push(row.note);
     p.features.push(row.tags === 'G' ? 'Карликова планета' : 'Астероїд головного поясу');
     p.infl = new Array(N).fill(0);

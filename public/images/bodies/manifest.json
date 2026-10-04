@@ -1,0 +1,37 @@
+{
+  "rock": [
+    "rock-01.png",
+    "rock-02.png",
+    "rock-03.png",
+    "rock-04.png",
+    "rock-05.png"
+  ],
+  "dark": [
+    "dark-01.png",
+    "dark-02.png",
+    "dark-03.png",
+    "dark-04.png",
+    "dark-05.png"
+  ],
+  "metal": [
+    "metal-01.png",
+    "metal-02.png",
+    "metal-03.png",
+    "metal-04.png",
+    "metal-05.png"
+  ],
+  "ice": [
+    "ice-01.png",
+    "ice-02.png",
+    "ice-03.png",
+    "ice-04.png",
+    "ice-05.png"
+  ],
+  "rusty": [
+    "rusty-01.png",
+    "rusty-02.png",
+    "rusty-03.png",
+    "rusty-04.png",
+    "rusty-05.png"
+  ]
+}
