@@ -24,11 +24,14 @@ export function loadSprites() {
   }
 }
 /** Родина спрайта за складом тіла: крижані, металеві, іржаві, темні, камʼяні */
-function spriteFamily(p: Planet): SpriteFam {
-  if (p.res.vol >= 0.5 || p.tags.includes('C') || p.tags.includes('I') || p.tags.includes('S-C')) return 'ice';
+export function spriteFamily(p: Planet): SpriteFam {
+  // порядок важливий: спершу склад (лід/метал), потім спектральний клас,
+  // і лише потім «темні» вуглецеві — інакше всі крижані супутники злилися б в одну родину
+  if (p.tags.includes('C') || p.tags.includes('I') || p.tags.includes('S-C') || p.res.vol >= 0.72) return 'ice';
   if (p.res.metal >= 0.75 && p.res.rare >= 0.35) return 'metal';
   if (p.tags.includes('F') || p.tags.includes('AB') || p.tags.includes('S-F')) return 'rusty';
-  if (p.tags === 'G' || p.tags === 'S-G' || p.radius < 60) return 'dark';
+  if (p.tags === 'G' || p.tags === 'S-G' || p.radius < 45) return 'dark';
+  if (p.res.vol >= 0.45) return 'ice';   // помірно крижані — теж лід
   return 'rock';
 }
 function spriteFor(p: Planet): HTMLImageElement | null {
