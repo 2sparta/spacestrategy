@@ -322,6 +322,18 @@ function genSystem(g: Game, id: number, seed: StarSeed): StarSystem {
       p.res = resFor(p.tags);
       describe(p);
       p.g = p.mass / (p.radius / 6371) ** 2; p.density = 5.51 * p.mass / (p.radius / 6371) ** 3;
+      // кожен четвертий карлик тримає великий супутник — пара, як Плутон і Харон:
+      // барицентр далеко від центра, тож гравітаційним буксиром можна міняти орбіту
+      if (p.radius < MOON_ENG.maxPlanetR && rnd() < 0.26) {
+        const mu = R(MOON_ENG.minRatio, 0.14);
+        const mm = mu * p.mass / (1 - mu);
+        const mrad = Math.max(MOON_ENG.minMoonR + 10, p.radius * R(0.3, 0.62));
+        const ma = p.radius * R(4, 9);
+        const m = makeMoon(g, p, ma, mm, mrad, `${p.name} I`, R(0.001, 0.02), R(0, 20));
+        m.tags = p.teq < 170 ? 'S-C' : 'S-G';
+        m.res = resFor(m.tags.slice(2));
+        finalizeMoons(g, p, false);
+      }
     }
   }
   if (!s.planets.length && !s.belts.length) beltOnly(s);
