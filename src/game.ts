@@ -52,6 +52,10 @@ export interface Planet {
   rot: number; tilt: number; teq: number; temp: number; pressure: number; atmo: string; toxic: boolean; weather: string;
   /** виміряна тривісність (0 = куля, 0.28 = сильно витягнутий еліпсоїд) */
   triax?: number;
+  /** супутник-партнер подвійної планети: барицентр пари лежить ПОЗА планетою */
+  binary?: boolean;
+  /** межа Роша для цього супутника, км (нижче неї орбіту не опустити) */
+  rocheA?: number;
   hydro: string; hydroCov: number; crust: string; magnet: number; radiation: number; tectonics: string; tidal: number; locked: boolean;
   resonance: string; roche: boolean; res: Res; bio: string; features: string[]; habit: number;
   kind?: 'planet' | 'dwarf' | 'asteroid';   // клас тіла (для Сонячної системи — точний)
@@ -413,6 +417,8 @@ export function newGame(s: number): Game {
     if (!p.tags.startsWith('A')) { b.farm = 0; }
     addColony(g, p, -1, pop, b, true);
   }
+  // подвійні планети (як Плутон–Харон) трапляються і в інших системах
+  for (const m of g.planets) if (m.parent >= 0) markDouble(g, g.planets[m.parent], m, false);
   log(g, 'Ласкаво просимо, CEO. Досліджуйте галактику, колонізуйте світи й підкорюйте ринки.', '#38d9ff');
   log(g, `🗺 Карта околиць Сонця: ${NS} зір у межах ~120 св. років. Масштаб — світлові роки, польоти між зорями тривають добами.`, '#9fb3c8');
   return g;
@@ -826,6 +832,7 @@ export function controlledPop(g: Game, f: number) {
 export const SINGULARITY = 60000;
 export function dayTick(g: Game) {
   g.day++;
+  tidalTick(g);
   for (const p of g.planets) if (p.colony) colonyTick(g, p);
   for (const p of g.planets) influenceTick(g, p);
   piracyTick(g);
@@ -858,6 +865,11 @@ function makeMoon(g: Game, p: Planet, a: number, mass: number, radius: number, n
   return m;
 }
 
+/** Припливний нагрів, нормований на Іо (M=318, R=1821, e=0.0041, a=421700, Q=100) */
+const IO_REF = (318 ** 2 * 1821 ** 5 * 0.0041 ** 2) / (421700 ** 6 * 100);
+export const tidalIndex = (p: Planet, m: Planet) =>
+  (p.mass ** 2 * m.radius ** 5 * m.e ** 2) / (Math.max(1, m.a) ** 6 * 100) / IO_REF;
+
 function finalizeMoons(g: Game, p: Planet, resonance = true) {
   for (let i = 0; i < p.moons.length; i++) {
     const m = g.planets[p.moons[i]];
@@ -871,10 +883,9 @@ function finalizeMoons(g: Game, p: Planet, resonance = true) {
       m.period = (2 * Math.PI * Math.sqrt(m.a ** 3 / mu)) / 86400;
     }
     const roche = 2.44 * p.radius * Math.cbrt((p.mass / (p.radius / 6371) ** 3) / (m.mass / (m.radius / 6371) ** 3));
+    m.rocheA = roche;
     if (m.a < roche) m.roche = true;
-    // Tidal heating normalised to Io (M=318, R=1821, e=0.0041, a=421700, Q=100)
-    const io = (318 ** 2 * 1821 ** 5 * 0.0041 ** 2) / (421700 ** 6 * 100);
-    m.tidal = (p.mass ** 2 * m.radius ** 5 * m.e ** 2) / (m.a ** 6 * 100) / io;
+    m.tidal = tidalIndex(p, m);
     if (!m.tags) m.tags = m.tidal > 0.3 ? 'S-F' : m.teq < 170 ? 'S-C' : pick(['S-G', 'S-B']);
     m.res = resFor(m.tags.slice(2));
     if (m.roche) m.features.push('На межі Роша — формує кільця');
@@ -882,6 +893,95 @@ function finalizeMoons(g: Game, p: Planet, resonance = true) {
     m.g = m.mass / (m.radius / 6371) ** 2; m.density = 5.51 * m.mass / (m.radius / 6371) ** 3;
     if (m.mass < 1e-4) { m.habit = Math.min(m.habit, 0.03); m.bio = 'Немає'; m.features.push('Астероїдний супутник, майже немає ресурсів'); }
     else if (m.radius < 400) m.habit = Math.min(m.habit, 0.12);
+  }
+}
+
+// ================== ОРБІТАЛЬНА ІНЖЕНЕРІЯ ==================
+/** Мілкі планети можуть змінювати орбіти своїх супутників. Фізична основа —
+ *  припливна міграція: припливи в тілі планети забирають обертальний момент і
+ *  віддають його орбіті супутника. Класичний приклад — Плутон і Харон: барицентр
+ *  пари лежить ПОЗА Плутоном (19 591 км × 0.104 ≈ 2 038 км > R = 1 188 км), тож
+ *  це не «планета із супутником», а подвійна планета.
+ *
+ *  «Спеціальні умови» для керування орбітою: супутник має бути масивним
+ *  (≥ MOON_ENG.minRatio маси пари), планета — мілкою (карликова або астероїдного
+ *  розміру), а орбіта — не на межі Роша, де супутник руйнується. */
+export const MOON_ENG = {
+  minRatio: 0.02,        // частка маси пари (Харон/Плутон = 0.104)
+  maxPlanetR: 3000,      // «мілка планета», км
+  minMoonR: 100,         // масивний супутник (проксі для припливного моменту), км
+  step: 0.06,            // крок зміни півосі за одну операцію
+  autoPerDay: 1.15e-5,   // припливна міграція сама собою: +0.42% півосі за ігровий рік
+};
+/** Частка маси пари, яка припадає на супутник */
+export const massRatio = (p: Planet, m: Planet) => m.mass / Math.max(1e-12, p.mass + m.mass);
+/** Відстань барицентра пари від центра планети, км */
+export const baryKm = (p: Planet, m: Planet) => m.a * massRatio(p, m);
+/** Чи утворюють пара подвійну планету (барицентр поза планетою) */
+export const isDouble = (p: Planet, m: Planet) =>
+  massRatio(p, m) >= MOON_ENG.minRatio && baryKm(p, m) > p.radius;
+/** Перерахувати орбіту супутника після зміни півосі (3-й закон Кеплера + припливи) */
+export function recalcMoon(p: Planet, m: Planet) {
+  const mu = 398600 * (p.mass + m.mass);
+  m.period = (2 * Math.PI * Math.sqrt(Math.max(1, m.a) ** 3 / mu)) / 86400;
+  m.rot = m.period * 24;                       // припливне захоплення: доба = період
+  m.tidal = tidalIndex(p, m);
+  m.locked = true;
+}
+/** Позначити пару подвійною планетою (один раз, із записом у журнал) */
+function markDouble(g: Game, p: Planet, m: Planet, announce: boolean) {
+  if (m.binary || !isDouble(p, m)) return;
+  m.binary = true; p.binary = true;
+  const bary = Math.round(baryKm(p, m)).toLocaleString('uk-UA');
+  const txt = `Подвійна планета: барицентр із ${m.name} на ${bary} км — поза тілом ${p.name}`;
+  if (!m.features.includes(txt)) m.features.push(txt);
+  const txt2 = `Подвійна планета: ${m.name} обертається навколо спільного барицентра`;
+  if (!p.features.includes(txt2)) p.features.push(txt2);
+  if (announce) log(g, `🌗 ${p.name} і ${m.name} — подвійна планета (як Плутон–Харон)`, '#c8a2ff');
+}
+/** Чому цим супутником не можна керувати (null — усе гаразд) */
+export function canSteer(_g: Game, p: Planet, m: Planet): string | null {
+  if (!m || m.parent < 0) return 'Це не супутник';
+  if (p.radius > MOON_ENG.maxPlanetR) return `Планета завелика (R = ${Math.round(p.radius)} км): мілкі планети керують орбітами, великі — ні`;
+  const ratio = massRatio(p, m);
+  if (m.radius < MOON_ENG.minMoonR && ratio < MOON_ENG.minRatio)
+    return `Супутник замалий: R = ${Math.round(m.radius)} км (< ${MOON_ENG.minMoonR} км) і лише ${(ratio * 100).toFixed(1)}% маси пари — припливного моменту не вистачає`;
+  return null;
+}
+/** Ціна однієї операції з орбітою */
+export const steerCost = (p: Planet, m: Planet) =>
+  Math.round(6000 * (0.6 + massRatio(p, m) * 3) * (1 + m.radius / 900));
+/** Змінити орбіту супутника: out — далі, in — ближче, circ — вирівняти.
+ *  Повертає текст помилки або '' у разі успіху. */
+export function steerMoon(g: Game, m: Planet, dir: 'out' | 'in' | 'circ'): string {
+  const p = g.planets[m.parent];
+  const bad = canSteer(g, p, m);
+  if (bad) return bad;
+  const f = g.factions[0], cost = steerCost(p, m);
+  if (f.money < cost) return `Потрібно ${cost.toLocaleString('uk-UA')} кр — бракує ${Math.round(cost - f.money).toLocaleString('uk-UA')}`;
+  const before = m.a;
+  if (dir === 'out') m.a = m.a * (1 + MOON_ENG.step);
+  else if (dir === 'in') m.a = Math.max((m.rocheA ?? p.radius * 2) * 1.1, m.a / (1 + MOON_ENG.step));
+  else m.e = Math.max(0.002, m.e * 0.25);
+  if (dir !== 'circ' && Math.abs(m.a - before) < 1) return 'Орбіта вже на межі Роша — ближче не можна';
+  f.money -= cost;
+  recalcMoon(p, m);
+  markDouble(g, p, m, true);
+  const how = dir === 'circ' ? `орбіту ${m.name} вирівняно (e = ${m.e.toFixed(3)})`
+    : `орбіту ${m.name} зсунуто: ${Math.round(m.a).toLocaleString('uk-UA')} км, період ${m.period.toFixed(2)} діб`;
+  log(g, `🛰 Гравітаційний буксир: ${how}`, '#7fd6ff');
+  return '';
+}
+/** Повільна припливна міграція: масивні супутники мілких планет самі відходять
+ *  усе далі, доки пара не стане подвійною планетою (як Плутон–Харон). */
+export function tidalTick(g: Game) {
+  for (const m of g.planets) {
+    if (m.parent < 0 || m.binary) continue;
+    const p = g.planets[m.parent];
+    if (p.radius > MOON_ENG.maxPlanetR || massRatio(p, m) < MOON_ENG.minRatio) continue;
+    m.a *= 1 + MOON_ENG.autoPerDay;
+    recalcMoon(p, m);
+    markDouble(g, p, m, true);
   }
 }
 
@@ -912,6 +1012,7 @@ const mr = (rKm: number, dens = 2.5) => Math.round(((rKm / 6371) ** 3) * (dens /
 interface SmallRow {
   name: string; a: number; e: number; inc: number; radius: number; mass: number;
   tags: 'G' | 'P'; note: string; res?: Partial<Res>; dens?: number; moons?: MoonRow[]; color?: string;
+  trojan?: 1 | -1;   // тримається точки L4 (+1) або L5 (−1) Юпітера
   m0?: number;   // середня аномалія на епоху J2000, рад (для найвідоміших тіл)
   triax?: number; rot?: number;   // виміряна тривісність і доба обертання (год)
 }
@@ -933,11 +1034,18 @@ const SOLAR_SMALL: SmallRow[] = [
     note: 'крижано-камʼяне тіло з пиловим покривом', res: { metal: 0.4, vol: 0.6 } },
   { name: '704 Інтерамнія', a: 3.062, e: 0.1546, inc: 17.31, radius: 166.5, mass: 7.8e-6, tags: 'P', dens: 2.6, color: '#9b9689',
     note: 'наймасивніший астероїд після Церери, Вести й Паллади', res: { metal: 0.6, rare: 0.3, vol: 0.4 } },
+  // --- Троянці Юпітера: тримаються точок L4/L5, за 60° від планети ---
+  { name: '588 Ахіллес', a: 5.2, e: 0.147, inc: 10.32, radius: 65, mass: mr(65, 2.5), tags: 'P', dens: 2.5, color: '#a89684', trojan: 1,
+    note: 'найбільший троянець L4 — «грецький табір» попереду Юпітера' },
+  { name: '617 Патрокл', a: 5.2, e: 0.139, inc: 22.05, radius: 70, mass: mr(70, 2.5), tags: 'P', dens: 2.5, color: '#9d9282', trojan: 1,
+    note: 'подвійний троянець L4 з супутником Менетій' },
+  { name: '624 Гектор', a: 5.24, e: 0.023, inc: 18.18, radius: 112.5, mass: mr(112.5, 2.5), tags: 'P', dens: 2.5, color: '#8f8577', trojan: -1,
+    note: 'найбільший троянець L5 — «троянський табір» позаду Юпітера' },
   // --- Карликові планети: пояс Койпера та розсіяний диск ---
   { name: 'Плутон', a: 39.482, e: 0.2488, inc: 17.16, radius: 1188.3, mass: 2.18e-3, tags: 'G', dens: 1.85, color: '#d8b7a0', m0: 0.2536,
     note: 'карликова планета з резонансом 2:3 з Нептуном; азотні льодовики й «серце» Томбо',
     res: { metal: 0.2, vol: 0.9, org: 0.6, rare: 0.25, exotic: 0.1 },
-    moons: [['Харон', 19591, 0.0002, 1.55e-3, 606, 'S-C'], ['Стікс', 42656, 0.0001, mr(16, 1.0), 16, 'S-C'],
+    moons: [['Харон', 19591, 0.0002, 2.66e-4, 606, 'S-C'], ['Стікс', 42656, 0.0001, mr(16, 1.0), 16, 'S-C'],
       ['Нікта', 48694, 0.0002, mr(19.5, 1.0), 19.5, 'S-C'], ['Кербер', 57783, 0.0003, mr(10, 1.0), 10, 'S-C'],
       ['Гідра', 64738, 0.0059, mr(30, 1.0), 30, 'S-C']] },
   { name: 'Ерида', a: 67.864, e: 0.4418, inc: 44.04, radius: 1163, mass: 2.8e-3, tags: 'G', dens: 2.43, color: '#e8e4de',
@@ -1032,7 +1140,7 @@ function genSolar(g: Game, id: number, x: number, y: number) {
     planets: [], piracy: 0.12,
     belts: [
       { a: [2.06, 3.27], kind: 'main', n: 620, label: 'Головний пояс астероїдів' },
-      { a: [5.05, 5.35], kind: 'trojan', n: 150, label: 'Троянці Юпітера' },
+      { a: [5.05, 5.35], kind: 'trojan', label: 'Троянці Юпітера' },
       { a: [30, 50], kind: 'kuiper', n: 520, label: 'Пояс Койпера' },
       { a: [50, 70], kind: 'kuiper', n: 180, label: 'Розсіяний диск' },
     ],
@@ -1091,6 +1199,11 @@ function genSolar(g: Game, id: number, x: number, y: number) {
     p.teq = Math.round(278 / Math.sqrt(p.a));
     p.period = 365.25 * Math.sqrt((p.a * p.a * p.a) / s.starMass);   // третій закон Кеплера
     if (row.m0 !== undefined) p.phase = row.m0;                      // фаза орбіти на епоху J2000
+    if (row.trojan) {                                                // точка L4/L5 Юпітера
+      const jup0 = g.planets.find(q => q.name === 'Юпітер');
+      if (jup0) { p.a = jup0.a; p.e = 0.06; p.phase = jup0.phase + row.trojan * Math.PI / 3; p.period = jup0.period; }
+      p.features.push(row.trojan > 0 ? 'Троянець L4 — 60° попереду Юпітера' : 'Троянець L5 — 60° позаду Юпітера');
+    }
     p.res = { ...resFor(''), ...(row.res || {}) } as Res;
     p.crust = row.dens && row.dens < 2.1 ? 'Крижано-кам’яна, пориста' : 'Кам’яно-металева';
     p.atmo = p.radius > 600 ? 'Розріджена (N₂, CH₄) — сезонна' : 'Майже вакуум';
@@ -1105,7 +1218,7 @@ function genSolar(g: Game, id: number, x: number, y: number) {
     p.rot = row.rot ?? (p.radius > 600 ? R(6, 30) : R(6, 40)); p.tilt = R(0, 30);
     if (row.triax) p.triax = row.triax;
     p.features.push(row.note);
-    p.features.push(row.tags === 'G' ? 'Карликова планета' : 'Астероїд головного поясу');
+    if (!row.trojan) p.features.push(row.tags === 'G' ? 'Карликова планета' : 'Астероїд головного поясу');
     p.infl = new Array(N).fill(0);
     for (const mrow of row.moons || []) {
       const [mn, ma2, me, mm, mradius, tag, minc] = mrow;
@@ -1118,6 +1231,12 @@ function genSolar(g: Game, id: number, x: number, y: number) {
   // троянці Юпітера тримаються точок L4/L5 — за 60° попереду й позаду планети
   const jup = g.planets.find(q => q.name === 'Юпітер');
   if (jup) for (const b of s.belts) if (b.kind === 'trojan') b.of = jup.id;
+  // Плутон–Харон — реальна подвійна планета: позначаємо одразу
+  for (const m of g.planets) {
+    if (m.parent < 0 || m.sys !== id) continue;
+    const par = g.planets[m.parent];
+    if (par.sys === id) markDouble(g, par, m, false);
+  }
   log(g, '🌍 Земля — столиця Федерації. Ваш шлях починається тут.', '#38d9ff');
   log(g, '🔭 Сонячна система: 8 планет, Церера й Веста в головному поясі, Плутон і карликові планети в поясі Койпера.', '#7fe0ff');
 }

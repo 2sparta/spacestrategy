@@ -1,0 +1,350 @@
+{
+ "sol-mercury": {
+  "file": "sol-mercury.png",
+  "w": 511,
+  "h": 255,
+  "kind": "rock"
+ },
+ "sol-venus": {
+  "file": "sol-venus.png",
+  "w": 511,
+  "h": 255,
+  "kind": "gas"
+ },
+ "sol-earth": {
+  "file": "sol-earth.png",
+  "w": 511,
+  "h": 255,
+  "kind": "earth"
+ },
+ "sol-mars": {
+  "file": "sol-mars.png",
+  "w": 511,
+  "h": 255,
+  "kind": "desert"
+ },
+ "sol-jupiter": {
+  "file": "sol-jupiter.png",
+  "w": 511,
+  "h": 255,
+  "kind": "gas"
+ },
+ "sol-saturn": {
+  "file": "sol-saturn.png",
+  "w": 511,
+  "h": 255,
+  "kind": "gas"
+ },
+ "sol-uranus": {
+  "file": "sol-uranus.png",
+  "w": 511,
+  "h": 255,
+  "kind": "icegiant"
+ },
+ "sol-neptune": {
+  "file": "sol-neptune.png",
+  "w": 511,
+  "h": 255,
+  "kind": "icegiant"
+ },
+ "sol-pluto": {
+  "file": "sol-pluto.png",
+  "w": 511,
+  "h": 255,
+  "kind": "dwarf"
+ },
+ "sol-ceres": {
+  "file": "sol-ceres.png",
+  "w": 511,
+  "h": 255,
+  "kind": "dwarf"
+ },
+ "sol-haumea": {
+  "file": "sol-haumea.png",
+  "w": 511,
+  "h": 255,
+  "kind": "ice"
+ },
+ "sol-makemake": {
+  "file": "sol-makemake.png",
+  "w": 511,
+  "h": 255,
+  "kind": "dwarf"
+ },
+ "sol-eris": {
+  "file": "sol-eris.png",
+  "w": 511,
+  "h": 255,
+  "kind": "ice"
+ },
+ "sol-moon": {
+  "file": "sol-moon.png",
+  "w": 511,
+  "h": 255,
+  "kind": "rock"
+ },
+ "sol-io": {
+  "file": "sol-io.png",
+  "w": 511,
+  "h": 255,
+  "kind": "volcanic"
+ },
+ "sol-europa": {
+  "file": "sol-europa.png",
+  "w": 511,
+  "h": 255,
+  "kind": "ice"
+ },
+ "sol-ganymede": {
+  "file": "sol-ganymede.png",
+  "w": 511,
+  "h": 255,
+  "kind": "rock"
+ },
+ "sol-titan": {
+  "file": "sol-titan.png",
+  "w": 511,
+  "h": 255,
+  "kind": "gas"
+ },
+ "sol-triton": {
+  "file": "sol-triton.png",
+  "w": 511,
+  "h": 255,
+  "kind": "ice"
+ },
+ "A-01": {
+  "file": "A-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "earth"
+ },
+ "A-02": {
+  "file": "A-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "earth"
+ },
+ "A-03": {
+  "file": "A-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "earth"
+ },
+ "AB-01": {
+  "file": "AB-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "dry"
+ },
+ "AB-02": {
+  "file": "AB-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "dry"
+ },
+ "AB-03": {
+  "file": "AB-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "earth"
+ },
+ "AC-01": {
+  "file": "AC-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "ocean"
+ },
+ "AC-02": {
+  "file": "AC-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "ocean"
+ },
+ "AC-03": {
+  "file": "AC-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "ocean"
+ },
+ "AF-01": {
+  "file": "AF-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "volcanic"
+ },
+ "AF-02": {
+  "file": "AF-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "volcanic"
+ },
+ "AF-03": {
+  "file": "AF-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "volcanic"
+ },
+ "B-01": {
+  "file": "B-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "desert"
+ },
+ "B-02": {
+  "file": "B-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "desert"
+ },
+ "B-03": {
+  "file": "B-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "desert"
+ },
+ "C-01": {
+  "file": "C-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "ice"
+ },
+ "C-02": {
+  "file": "C-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "ice"
+ },
+ "C-03": {
+  "file": "C-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "ice"
+ },
+ "D-01": {
+  "file": "D-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "gas"
+ },
+ "D-02": {
+  "file": "D-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "gas"
+ },
+ "D-03": {
+  "file": "D-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "gas"
+ },
+ "CD-01": {
+  "file": "CD-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "icegiant"
+ },
+ "CD-02": {
+  "file": "CD-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "icegiant"
+ },
+ "CD-03": {
+  "file": "CD-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "icegiant"
+ },
+ "E-01": {
+  "file": "E-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "extreme"
+ },
+ "E-02": {
+  "file": "E-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "extreme"
+ },
+ "E-03": {
+  "file": "E-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "extreme"
+ },
+ "F-01": {
+  "file": "F-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "volcanic"
+ },
+ "F-02": {
+  "file": "F-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "volcanic"
+ },
+ "F-03": {
+  "file": "F-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "volcanic"
+ },
+ "G-01": {
+  "file": "G-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "dwarf"
+ },
+ "G-02": {
+  "file": "G-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "dwarf"
+ },
+ "G-03": {
+  "file": "G-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "dwarf"
+ },
+ "I-01": {
+  "file": "I-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "rogue"
+ },
+ "I-02": {
+  "file": "I-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "rogue"
+ },
+ "I-03": {
+  "file": "I-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "rogue"
+ },
+ "R-01": {
+  "file": "R-01.png",
+  "w": 448,
+  "h": 224,
+  "kind": "rock"
+ },
+ "R-02": {
+  "file": "R-02.png",
+  "w": 448,
+  "h": 224,
+  "kind": "rock"
+ },
+ "R-03": {
+  "file": "R-03.png",
+  "w": 448,
+  "h": 224,
+  "kind": "rock"
+ }
+}

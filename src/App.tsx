@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Game, Planet, Place, Ship, ShipType } from './game';
+import type { Belt, Game, Planet, Place, Ship, ShipType } from './game';
 import {
   ACTS, BASE, BMAP, BUILD, GOODS, GOOD_ICON, LEVEL_NAME, RES_NAME, SHIPDEF, SINGULARITY, actCost, build, buildCost,
   canColonize, colonize, colonizeCost, controlledPop, dayTick, demolish, doAct, eta, hoursPerLy, level as inflLevel, newGame, orbitA,
   placeName, planetPlace, price, shipProgress, shipPlace, spawnShip, starPlace, tradeDep, updateShips, setCourse, warships,
   irregularity, isIrregular, potatoRadius, POTATO_RADIUS_ICY_KM, POTATO_RADIUS_ROCKY_KM, isIcy,
+  MOON_ENG, baryKm, canSteer, isDouble, massRatio, steerCost, steerMoon,
   type ResKey,
 } from './game';
-import { drawScene, drawnPosAU, loadSprites, moonRefAU, shipSystemPos, type Camera, type Hit, type Scene } from './render';
+import { drawScene, drawnPosAU, loadPlanetTextures, loadSprites, moonRefAU, shipSystemPos, type Camera, type Hit, type Scene } from './render';
 import { KM_PER_AU, SPEEDS, TAG_COLOR, TAG_DESC, auFmt, clamp, fmt, lyFmt, popFmt, starTint } from './style';
 
 const emptyCam = (): Camera => ({ x: 0, y: 0, z: 1, tx: 0, ty: 0, tz: 1, ease: false });
@@ -30,7 +31,10 @@ const GAL_ZMIN = 0.35, GAL_ZMAX = 260;
 const ZONES: [string, number][] = [
   ['Внутрішні планети', 1.7], ['Пояс астероїдів', 3.6], ['Зовнішні планети', 31], ['Пояс Койпера', 72],
 ];
-const zoneOf = (a: number) => (a < 2.0 ? 0 : a < 3.5 ? 1 : a < 30 ? 2 : 3);
+/** Зона за орбітою; троянці Юпітера (малі тіла на 5.2 а.о.) належать поясу астероїдів */
+const zoneOf = (a: number, kind?: string) =>
+  kind === 'asteroid' && a > 3.5 && a < 6.5 ? 1 : a < 2.0 ? 0 : a < 3.5 ? 1 : a < 30 ? 2 : 3;
+const beltZone = (b: Belt) => (b.kind === 'trojan' ? 1 : zoneOf((b.a[0] + b.a[1]) / 2));
 /** Підписи зон: для Сонця — «людські», для інших систем — узагальнені */
 /** Скільки в системі планет / карликових планет / астероїдів */
 function bodyCounts(g: Game, sysId: number) {
@@ -86,7 +90,8 @@ export default function App() {
     const img = new Image();
     img.onload = () => { bgRef.current = img; };
     img.src = 'images/nebula.jpg';
-    loadSprites();   // спрайти астероїдів для глибокого зуму
+    loadSprites();          // спрайти астероїдів для глибокого зуму
+    loadPlanetTextures();   // текстури планет (Сонячна система + по 3 на тип)
   }, []);
 
   /* ---------- головний цикл ---------- */
@@ -201,8 +206,8 @@ export default function App() {
   }
   /** Радіус підгонки для зони: найдальший обʼєкт зони з невеликим запасом */
   function zoneRadius(zone: number) {
-    const items = sys.planets.map(id => g.planets[id]).filter(q => zoneOf(q.a) === zone);
-    const belts = sys.belts.filter(b => zoneOf((b.a[0] + b.a[1]) / 2) === zone);
+    const items = sys.planets.map(id => g.planets[id]).filter(q => zoneOf(q.a, q.kind) === zone);
+    const belts = sys.belts.filter(b => beltZone(b) === zone);
     const maxA = Math.max(0, ...items.map(q => q.a * 1.15), ...belts.map(b => b.a[1] * 1.05));
     return maxA || 0.4;
   }
@@ -539,9 +544,12 @@ export default function App() {
                 <p><b className="text-cyan-300">Масштаб:</b> відстані реальні. Сонце → Проксима Центавра — 4.2 св. роки, до Веґи 25, до Регула 79. Стрибок між зорями коштує <b>12 год/св. рік</b> для вантажника (розвідник 6, рудовоз 20). Усередині системи корабель іде 0.3–1.2 а.о. за добу, тому Земля → Юпітер ≈ 7 діб, Земля → Нептун ≈ 50 діб.</p>
                 <p><b className="text-cyan-300">Цикл гри:</b> розвідник досліджує системи → обери планету → «Розвиток» → аванпост → видобуток і виробництво → вантажники торгують → імпорт від тебе створює <b>торгову залежність</b> → тарифи, ембарго, перевороти, анексія.</p>
                 <p><b className="text-cyan-300">Зорі без планет:</b> трапляються часто — там лише пилові пояси. Розвідник може долетіти до самої зорі (клік по зорі на карті системи) і підтвердити, що планет немає.</p>
-                <p><b className="text-cyan-300">Масштаб тіл:</b> розміри справжні. Поки тіло на екрані менше кількох пікселів, воно малюється читабельною іконкою, але щойно ви наближаєтесь — планета, супутник чи астероїд <b>ростуть до розмірів екрана</b>. Глибина зуму — до <b>~75 метрів на піксель</b> (2×10⁹ px/а.о.): на такому масштабі Фобос і Деймос видно як справжні брили з кратерами. Керування: колесо — плавно, <b>Shift+колесо</b> або <b>PageUp/PageDown</b> — стрибками ×12, кнопка 🔍 «Роздивитися» в панелі тіла або <b>подвійний клік</b> — одразу до тіла, 🛰 «Супутники» — уся система супутників.</p>
+                <p><b className="text-cyan-300">Масштаб тіл:</b> розміри справжні. <b>На далекому плані планети — лише крихітні крапки</b> (близько пікселя): так видно, наскільки вони менші за відстані між ними. У міру наближення тіло виростає з іконки — планета, супутник чи астероїд <b>ростуть до розмірів екрана</b>. Глибина зуму — до <b>~75 метрів на піксель</b> (2×10⁹ px/а.о.): на такому масштабі Фобос і Деймос видно як справжні брили з кратерами. Керування: колесо — плавно, <b>Shift+колесо</b> або <b>PageUp/PageDown</b> — стрибками ×12, кнопка 🔍 «Роздивитися» в панелі тіла або <b>подвійний клік</b> — одразу до тіла, 🛰 «Супутники» — уся система супутників.</p>
+                <p><b className="text-cyan-300">Текстури планет:</b> у Сонячної системи власна текстура для кожної планети, карликової планети й великого супутника (Земля з континентами, Юпітер зі смугами й Великою Червоною Плямою, Марс із каньйонами, Іо із сірчаними виверженнями, Європа з крижаними розломами). У решти систем — <b>по 3 варіанти на кожен тип планети</b> (земний, океанічний, пустельний, вулканічний, крижаний, газовий і крижаний гігант, екстремальний, мандрівний тощо). Панорама текстури прокручується з добою тіла, а світло завжди падає згори-зліва.</p>
                 <p><b className="text-cyan-300">Спрайти тіл:</b> астероїди й дрібні супутники малюються згенерованими спрайтами (5 родин: камʼяні, темні, металеві, крижані, іржаві) — вони обертаються, мають кратери й неправильний силует. Карликові планети, що не досягли гідростатичної рівноваги, малюються витягнутими еліпсоїдами (як Гаумеа). Планети, газові гіганти й великі супутники у наближенні показують процедурну поверхню: континенти й полярні шапки, пояси хмар із Великою Червоною Плямою, кратерні поля.</p>
                 <p><b className="text-cyan-300">Форма тіл:</b> радіус, за якого гравітація перемагає міцність матеріалу («картопляний радіус», potato radius) — близько <b>200 км для крижаних</b> і <b>300 км для камʼяних</b> тіл (Lineweaver &amp; Norman, 2010). Дрібніші тіла лишаються безформними «картоплинами»: Фобос, Деймос, Амальтея, Гіперіон, Пак. На карті вони малюються як неправильні астероїди, і чим менше тіло — тим горбистіше.</p>
+                <p><b className="text-cyan-300">Орбітальна інженерія:</b> мілка планета (радіус до {MOON_ENG.maxPlanetR} км) може змінювати орбіти своїх супутників, якщо супутник масивний (від {MOON_ENG.minMoonR} км або понад {(MOON_ENG.minRatio * 100).toFixed(0)}% маси пари). У вкладці «Фізика» з’являється блок 🛰: <b>⇥ далі</b> — підняти орбіту, <b>⇤ ближче</b> — опустити (до межі Роша), <b>◉ вирівняти</b> — зменшити ексцентриситет і припливний нагрів. Коли спільний барицентр виходить <b>за тіло планети</b>, пара стає подвійною планетою — саме так, як Плутон і Харон (барицентр ≈ 2 100 км, а радіус Плутона 1 188 км).</p>
+                <p><b className="text-cyan-300">Троянці:</b> у Сонячній системі троянці Юпітера тримаються точок L4/L5 — дві густі дуги за 60° попереду й позаду планети; у наближенні видно окремі тіла, серед них справжні Ахіллес, Патрокл і Гектор, які можна дослідити.</p>
                 <p><b className="text-cyan-300">Сонячна система:</b> 8 планет, 9 карликових планет (Церера, Плутон, Гаумеа, Макемаке, Ерида, Гонггонг, Кваоар, Орк, Гігіея), найбільші астероїди (Веста, Паллада, Юнона, Психея, Європа, Інтерамнія), головний пояс астероїдів із люками Кірквуда, троянці Юпітера L4/L5, пояс Койпера та розсіяний диск. Зони: Внутрішня · Пояс астероїдів · Зовнішня · Койпер.</p>
                 <p><b className="text-cyan-300">Перемога:</b> 60% населення галактики під контролем, або {fmt(SINGULARITY)} очок науки (сингулярність), або 70% колоній у власності.</p>
               </div>}
@@ -584,8 +592,8 @@ export default function App() {
             <div className="text-xs text-slate-400">Об’єкти системи (клік — обрати й наблизити до системи супутників):</div>
             <div className="flex gap-1 flex-wrap">
               {ZONES.map(([name, _rad], i) => {
-                const cnt = sys.planets.filter(id => zoneOf(g.planets[id].a) === i).length;
-                const has = cnt > 0 || sys.belts.some(b => zoneOf((b.a[0] + b.a[1]) / 2) === i);
+                const cnt = sys.planets.filter(id => zoneOf(g.planets[id].a, g.planets[id].kind) === i).length;
+                const has = cnt > 0 || sys.belts.some(b => beltZone(b) === i);
                 return has ? <button key={name} onClick={() => fitZone(zoneRadius(i))} title={`Показати зону: ${name}`}
                   className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]">{zoneLabel(sysId, i)} <span className="text-slate-500">{cnt || ''}</span></button> : null;
               })}
@@ -593,9 +601,9 @@ export default function App() {
             </div>
             {sys.planets.length === 0 && <div className="text-xs text-amber-300/80">Обʼєктів немає — тільки пилові пояси. Таких зір у галактиці чимало, і розвідник може долетіти до самої зорі.</div>}
             {[0, 1, 2, 3].map(zone => {
-              const items = sys.planets.map(id => g.planets[id]).filter(q => zoneOf(q.a) === zone).sort((x, y) => x.a - y.a);
+              const items = sys.planets.map(id => g.planets[id]).filter(q => zoneOf(q.a, q.kind) === zone).sort((x, y) => x.a - y.a);
               if (!items.length) return null;
-              const hasBelts = sys.belts.some(b => zoneOf((b.a[0] + b.a[1]) / 2) === zone);
+              const hasBelts = sys.belts.some(b => beltZone(b) === zone);
               return <div key={zone}>
                 <div className="text-[10px] uppercase tracking-wide text-slate-500 mt-1">{zoneLabel(sysId, zone)}{hasBelts ? ' · пояс дрібних тіл' : ''}</div>
                 {items.map(q => {
@@ -712,6 +720,8 @@ function PlanetPanel({ g, p, explored, tab, setTab, msg, setObj, inspect }: { g:
   const c = p.colony;
   const lv = inflLevel(g, p, 0);
   const ownerName = p.owner >= 0 ? g.factions[p.owner].name : c ? 'Незалежна цивілізація' : 'Ніхто';
+  // «господар» орбітальної інженерії: для супутника — його планета, інакше саме тіло
+  const engHost = p.parent >= 0 ? g.planets[p.parent] : p;
   const bigMoons = p.moons.map(m => g.planets[m]).filter(m => m.radius > 220);
   const smallMoons = p.moons.length - bigMoons.length;
   return <div className="space-y-2">
@@ -719,6 +729,7 @@ function PlanetPanel({ g, p, explored, tab, setTab, msg, setObj, inspect }: { g:
       <div className="text-lg font-semibold flex items-center gap-2">
         <span style={{ color: TAG_COLOR[p.tags] }}>●</span>{p.name}
         <span className="text-xs bg-slate-700 px-1.5 rounded">{p.tags}</span>
+        {(p.binary || engHost.binary) && <span className="text-xs bg-fuchsia-900/70 px-1.5 rounded" title="Барицентр пари лежить поза планетою">подвійна</span>}
         {p.colony && <span className="text-xs px-1.5 rounded" style={{ background: p.owner >= 0 ? g.factions[p.owner].color + '44' : '#ffffff22' }}>{colonyLevelLabel(p.colony!.pop)}</span>}
       </div>
       <div className="text-slate-400 text-xs">{TAG_DESC[p.tags] || p.tags} · Придатність {(p.habit * 100).toFixed(0)}% · <span style={{ color: p.owner >= 0 ? g.factions[p.owner].color : '#ddd' }}>{ownerName}</span></div>
@@ -753,6 +764,11 @@ function PlanetPanel({ g, p, explored, tab, setTab, msg, setObj, inspect }: { g:
         ['Тиск', isFinite(p.pressure) ? `${p.pressure < 0.01 ? p.pressure.toExponential(1) : p.pressure.toFixed(3)} атм` : 'Немає поверхні'], ['Атмосфера', p.atmo], ['Токсичність', p.toxic ? 'Так' : 'Придатна для дихання'], ['Погода', p.weather],
         ['Гідросфера', `${p.hydro}${p.hydroCov ? ` (${(p.hydroCov * 100).toFixed(0)}%)` : ''}`], ['Кора', p.crust], ['Магнітосфера', p.magnet.toFixed(2)], ['Радіація', `${(p.radiation * 100).toFixed(0)}%`],
         ['Тектоніка', p.tectonics], ['Припливний нагрів', p.parent >= 0 ? `${p.tidal.toFixed(3)} × Іо` : '—'], ['Резонанс', p.resonance || '—'], ['Біосфера', p.bio],
+        ['Барицентр', (() => {
+          if (p.parent < 0) return '—';
+          const par = g.planets[p.parent];
+          return `${fmt(baryKm(par, p))} км ${isDouble(par, p) ? '— ПОЗА планетою (подвійна планета)' : `(R планети ${fmt(par.radius)} км)`}`;
+        })()],
       ] as [string, string][]).map(([k, v]) => <div key={k} className="contents"><div className="text-slate-500">{k}</div><div>{v}</div></div>)}
       <div className="col-span-2 mt-2 font-semibold">Форма та гравітаційна рівновага</div>
       <div className="col-span-2">
@@ -772,6 +788,34 @@ function PlanetPanel({ g, p, explored, tab, setTab, msg, setObj, inspect }: { g:
             </span>;
         })()}
       </div>
+      {engHost.radius <= MOON_ENG.maxPlanetR && engHost.moons.length > 0 && <div className="col-span-2 mt-2 font-semibold">
+        🛰 Орбітальна інженерія <span className="font-normal text-slate-500">— мілка планета керує орбітами супутників</span>
+      </div>}
+      {engHost.radius <= MOON_ENG.maxPlanetR && engHost.moons.length > 0 && <div className="col-span-2 space-y-1">
+        {engHost.moons.map(mid => {
+          const m = g.planets[mid];
+          const bad = canSteer(g, engHost, m);
+          const cost = steerCost(engHost, m);
+          return <div key={mid} className="flex flex-wrap items-center gap-x-2 border-t border-slate-700/60 pt-1">
+            <span className="cursor-pointer text-cyan-400 hover:underline" onClick={() => setObj(mid)}>{m.name}</span>
+            <span className="text-slate-500">{fmt(m.a)} км · {(massRatio(engHost, m) * 100).toFixed(1)}% маси пари · барицентр {fmt(baryKm(engHost, m))} км</span>
+            {m.binary && <span className="text-fuchsia-300">подвійна планета</span>}
+            {!bad ? <>
+              <button className={`px-1.5 rounded ${me.money >= cost ? 'bg-cyan-700 hover:bg-cyan-600' : 'bg-slate-700 text-slate-400'}`}
+                title={`Гравітаційний буксир: підняти орбіту на ${(MOON_ENG.step * 100).toFixed(0)}% (${fmt(cost)} кр)`}
+                onClick={() => msg(steerMoon(g, m, 'out') || `🛰 ${m.name}: орбіту піднято`)}>⇥ далі · {fmt(cost)} кр</button>
+              <button className="px-1.5 rounded bg-slate-700 hover:bg-slate-600" title="Опустити орбіту (до межі Роша)"
+                onClick={() => msg(steerMoon(g, m, 'in') || `🛰 ${m.name}: орбіту опущено`)}>⇤ ближче</button>
+              <button className="px-1.5 rounded bg-slate-700 hover:bg-slate-600" title="Вирівняти орбіту (зменшити ексцентриситет і припливний нагрів)"
+                onClick={() => msg(steerMoon(g, m, 'circ') || `🛰 ${m.name}: орбіту вирівняно`)}>◉ вирівняти</button>
+            </> : <span className="text-slate-500">— {bad}</span>}
+          </div>;
+        })}
+        <div className="text-[10px] text-slate-500">
+          Приклад природи: Плутон і Харон обертаються навколо спільного барицентра, який лежить поза Плутоном — це подвійна планета.
+          Кожна операція зсуває орбіту й перераховує період за третім законом Кеплера; коли барицентр виходить за тіло планети, пара стає подвійною.
+        </div>
+      </div>}
       <div className="col-span-2 mt-2 font-semibold">Ресурси</div>
       {(Object.keys(p.res) as ResKey[]).map(k => <div key={k} className="col-span-2 flex items-center gap-2"><span className="w-32">{RES_NAME[k]}</span><div className="flex-1"><Bar v={p.res[k] * 100} color="#e8b04a" /></div><span className="w-8 text-right">{(p.res[k] * 100).toFixed(0)}</span></div>)}
       {p.features.length > 0 && <div className="col-span-2 mt-1 text-amber-300">✧ {p.features.join(', ')}</div>}
